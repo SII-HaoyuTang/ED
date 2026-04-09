@@ -7,7 +7,7 @@ from torch_geometric.data import Data
 from torch_geometric.nn import MessagePassing
 from torch_scatter import scatter
 
-from visnet.models.utils import (
+from .utils import (
     CosineCutoff,
     Distance, 
     EdgeEmbedding,

@@ -1,11 +1,10 @@
 from abc import ABCMeta, abstractmethod
 
-import ase
 import torch
 import torch.nn as nn
 from torch_scatter import scatter
 
-from visnet.models.utils import act_class_mapping
+from .utils import act_class_mapping
 
 __all__ = ["Scalar", "DipoleMoment", "ElectronicSpatialExtent", "VectorOutput"]
 
@@ -135,6 +134,7 @@ class EquivariantScalar(OutputModel):
 class DipoleMoment(Scalar):
     def __init__(self, hidden_channels, activation="silu", allow_prior_model=False):
         super(DipoleMoment, self).__init__(hidden_channels, activation, allow_prior_model=allow_prior_model)
+        import ase
         atomic_mass = torch.from_numpy(ase.data.atomic_masses).float()
         self.register_buffer("atomic_mass", atomic_mass)
 
@@ -154,6 +154,7 @@ class DipoleMoment(Scalar):
 class EquivariantDipoleMoment(EquivariantScalar):
     def __init__(self, hidden_channels, activation="silu", allow_prior_model=False):
         super(EquivariantDipoleMoment, self).__init__(hidden_channels, activation, allow_prior_model=allow_prior_model)
+        import ase
         atomic_mass = torch.from_numpy(ase.data.atomic_masses).float()
         self.register_buffer("atomic_mass", atomic_mass)
 
@@ -185,6 +186,7 @@ class ElectronicSpatialExtent(OutputModel):
             act_class(),
             nn.Linear(hidden_channels // 2, 1),
         )
+        import ase
         atomic_mass = torch.from_numpy(ase.data.atomic_masses).float()
         self.register_buffer("atomic_mass", atomic_mass)
 
