@@ -158,56 +158,55 @@ class _LocalViSNet(nn.Module):
 
 
 # ---------------------------------------------------------------------------
-# Atomref computation (least-squares fit from training data)
+# Per-element single-atom reference energies (B3LYP/6-31G(2df,p), eV)
+# Extend this table when fine-tuning on datasets with new elements.
 # ---------------------------------------------------------------------------
 
-def compute_atomref(loader: DataLoader, max_z: int) -> Tensor:
+ATOMREF_TABLE: dict[int, float] = {
+    1:  -13.61,    # H
+    6:  -1029.86,  # C
+    7:  -1485.30,  # N
+    8:  -2042.61,  # O
+    9:  -2715.57,  # F
+    11: -4411.90,  # Na  (for Na-ion dataset fine-tuning)
+}
+
+
+def build_atomref(max_z: int, dataset=None, target_idx: int = 7) -> Tensor:
     """
-    Estimate per-element reference energies by solving:
-        A @ atomref ≈ y
-    where A[mol, z] = count of element z in molecule mol.
+    Build per-element reference energy tensor of shape (max_z,).
 
-    Returns: atomref tensor of shape (max_z,) in eV.
+    Priority (highest to lowest):
+      1. dataset.atomref(target_idx) — dataset built-in values (most accurate,
+                                       same DFT level as training labels)
+      2. ATOMREF_TABLE               — hard-coded fallback for extra elements
+                                       (extend this dict for new element types)
+      3. 0.0                         — unknown elements; the atomref embedding
+                                       will adapt during training
+
+    Returns: Tensor of shape (max_z,) with per-element energies in eV.
     """
-    print("Computing per-element atomref via least squares...")
-    all_y, all_z, all_batch = [], [], []
-    mol_offset = 0
-    for data in tqdm(loader, desc="  Collecting atoms", leave=False):
-        n_mols = int(data.batch.max().item()) + 1
-        all_y.append(data.y[:, _U0_IDX].cpu())
-        all_z.append(data.z.cpu())
-        all_batch.append(data.batch.cpu() + mol_offset)
-        mol_offset += n_mols
-
-    all_y = torch.cat(all_y)          # (num_mols,)
-    all_z = torch.cat(all_z)          # (num_atoms_total,)
-    all_batch = torch.cat(all_batch)   # (num_atoms_total,)
-    num_mols = all_y.shape[0]
-
-    # Build element-count matrix: A[mol, z] = number of atoms of type z in mol
-    A = torch.zeros(num_mols, max_z)
-    for z_val in all_z.unique():
-        mask = (all_z == z_val)
-        counts = scatter(
-            torch.ones(mask.sum()),
-            all_batch[mask], dim=0, dim_size=num_mols, reduce="add"
-        )
-        A[:, z_val.item()] = counts
-
-    # Restrict to elements that actually appear
-    active = A.sum(0) > 0
-    A_active = A[:, active]
-
-    # Least-squares: min ||A_active @ ref - y||
-    solution = torch.linalg.lstsq(A_active, all_y).solution
     atomref = torch.zeros(max_z)
-    atomref[active] = solution.view(-1)
+
+    # Layer 2: fill from hard-coded table
+    for z, val in ATOMREF_TABLE.items():
+        if z < max_z:
+            atomref[z] = val
+
+    # Layer 1: override with dataset values when available (higher priority)
+    if dataset is not None:
+        ds_ref = getattr(dataset, "atomref", None)
+        if callable(ds_ref):
+            ds_ref = ds_ref(target_idx)
+        if ds_ref is not None:
+            ds_ref = ds_ref.squeeze(-1)
+            n = min(len(ds_ref), max_z)
+            atomref[:n] = ds_ref[:n]
+
+    present = atomref.nonzero(as_tuple=True)[0]
     print(
-        f"  Atomref fitted for {active.sum().item()} elements: "
-        + ", ".join(
-            f"z={z.item()}:{atomref[z].item():.2f} eV"
-            for z in active.nonzero(as_tuple=True)[0]
-        )
+        "Atomref (single-atom DFT energies): "
+        + ", ".join(f"z={z.item()}:{atomref[z].item():.2f} eV" for z in present)
     )
     return atomref
 
@@ -361,8 +360,8 @@ def main() -> None:
         num_workers=args.num_workers,
     )
 
-    # --- Atomref: fit per-element reference energies from training data ---
-    atomref = compute_atomref(train_loader, max_z=args.max_z)
+    # --- Atomref: single-atom DFT reference energies ---
+    atomref = build_atomref(args.max_z, dataset=dataset, target_idx=_U0_IDX)
     mean, std = compute_residual_stats(train_loader, atomref)
     print(f"Residual stats: mean={mean:.4f} eV, std={std:.4f} eV")
 

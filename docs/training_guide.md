@@ -164,13 +164,13 @@ checkpoints/
 
 ### 架构说明（2025 年更新）
 
-本阶段改用项目内置的原始 ViSNet 源码（`src/model/ViSNet-main/`），不再依赖 PyG 内置实现，具体变更：
+本阶段改用项目内置的原始 ViSNet 源码（`src/model/visnet/`），不再依赖 PyG 内置实现，具体变更：
 
 | 组件 | 旧版（PyG）| 新版（本地源码）|
 |------|-----------|----------------|
 | 表征模型 | `torch_geometric.nn.models.ViSNet` | 本地 `ViSNetBlock`（lmax=2, vertex_type=Edge）|
 | 输出头 | `Scalar`（仅标量特征）| `EquivariantScalar`（标量 + 等变向量特征）|
-| 先验模型 | 无 | **Atomref**（最小二乘法拟合的逐元素参考能量）|
+| 先验模型 | 无 | **Atomref**（分层查找单原子 DFT 能量：① 数据集内置值 → ② `ATOMREF_TABLE` → ③ 0 初始化）|
 | `hidden_channels` | 256 | **512**（与论文一致）|
 | `num_layers` | 6 | **9**（与论文一致）|
 | `num_rbf` | 32 | **64**（与论文一致）|
@@ -178,6 +178,32 @@ checkpoints/
 
 > **注意**：vec 形状变化对 Stage 1/2 训练无影响，因为两者均忽略 vec（`_`）。
 > 使用预训练权重时必须指定 `--hidden_channels 512`。
+
+**Atomref 分层查找逻辑**
+
+模型预测的是**原子化能**（atomization energy），即减去各元素单原子 DFT 参考能量后的残差：
+
+| 优先级 | 来源 | 说明 |
+|--------|------|------|
+| ① 最高 | `dataset.atomref(target)` | 数据集内置值，与训练标签同一 DFT 计算级别 |
+| ② 次之 | `ATOMREF_TABLE`（`pretrain_visnet.py` 顶部）| 代码内置的扩展元素表（B3LYP/6-31G(2df,p)），默认包含 H/C/N/O/F/Na |
+| ③ 最低 | `0.0` | 完全未知元素，训练时 embedding 自适应 |
+
+**扩展到新元素（如 Na 离子数据集）**
+
+在 `pretrain_visnet.py` 顶部的 `ATOMREF_TABLE` 字典中添加对应原子序数和能量即可：
+
+```python
+ATOMREF_TABLE: dict[int, float] = {
+    1:  -13.61,    # H
+    6:  -1029.86,  # C
+    7:  -1485.30,  # N
+    8:  -2042.61,  # O
+    9:  -2715.57,  # F
+    11: -4411.90,  # Na  ← 已内置，可直接用于 Na 离子数据集微调
+    # 按需添加更多元素...
+}
+```
 
 **冒烟测试（验证环境，~2 分钟）**
 
