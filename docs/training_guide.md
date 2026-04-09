@@ -4,6 +4,70 @@
 
 ---
 
+## 项目目录结构
+
+```
+ED/
+├── pretrain_visnet.py              # 第一阶段：ViSNet 预训练（QM9 U0 能量预测）
+├── train_stage1.py                 # 第二阶段：等变流匹配，生成点云位置
+├── train_stage2.py                 # 第三阶段：不变流匹配，生成密度值
+├── inference.py                    # 推理：给定新分子采样电子云点云
+│
+├── src/
+│   ├── model/
+│   │   ├── __init__.py             # 导出 VisNetEncoder / Stage1FlowNet / Stage2FlowNet
+│   │   ├── visnet_encoder.py       # VisNetEncoder 包装器（逐原子特征提取）
+│   │   ├── visnet/                 # ViSNet 原始源码（仅保留必要文件）
+│   │   │   └── models/
+│   │   │       ├── visnet_block.py     # 核心表征模型（ViSNetBlock）
+│   │   │       ├── output_modules.py  # 输出头（EquivariantScalar 等）
+│   │   │       └── utils.py           # RBF / Distance / Sphere 工具
+│   │   ├── stage1_flow.py          # 等变流网络（Stage 1）
+│   │   ├── stage2_flow.py          # 不变流网络（Stage 2）
+│   │   └── cfg.py                  # CFG 引导 + ODE 求解器
+│   ├── data/
+│   │   └── ed_energy_5w/
+│   │       ├── raw/                # CSV 标签文件
+│   │       │   └── ed_energy_5w.csv
+│   │       ├── processed/          # PKL 密度点云（~9 GB）
+│   │       │   └── mol_EDthresh0.05_data.pkl
+│   │       └── cache/              # FPS 采样缓存（自动生成）
+│   └── utils/
+│       ├── eval.py
+│       └── ot_cfm.py
+│
+├── bench_mark/                     # EDBench ED5-EC 能量预测复现（独立模块）
+│   ├── data/
+│   │   └── energy_dataset.py       # EDBenchEnergyDataset（FPS 采样 + 能量标签）
+│   ├── models/
+│   │   ├── cls_head.py             # 回归头（MLP）
+│   │   └── backbone/
+│   │       ├── pointmetabase_x3d.py    # X-3D 主网络
+│   │       └── x3d_utils/
+│   │           ├── explicit_structure.py  # PCA + PointHop 几何特征
+│   │           └── neighbor_context.py    # 邻域上下文聚合
+│   ├── cfgs/
+│   │   └── energy_x3d.yaml         # 超参数配置（对标论文）
+│   └── train_energy.py             # 训练入口
+│
+├── data/
+│   └── qm9/                        # QM9 数据集（首次运行自动下载，~1.7 GB）
+│
+├── checkpoints/
+│   ├── visnet_pretrained/
+│   │   └── best.pt                 # ViSNet 预训练最佳检查点
+│   ├── stage1/
+│   │   └── final.pt                # Stage 1 最终检查点
+│   └── stage2/
+│       └── final.pt                # Stage 2 最终检查点
+│
+└── docs/
+    ├── training_guide.md           # 本文档
+    └── ED2energy_bench_mark.md     # EDBench 复现说明
+```
+
+---
+
 ## 环境准备
 
 ### 创建 Conda 环境（CUDA 12.1）
@@ -98,12 +162,31 @@ checkpoints/
 
 在 QM9 数据集上以 U0 内能预测任务预训练 ViSNet，获得通用分子表征。
 
+### 架构说明（2025 年更新）
+
+本阶段改用项目内置的原始 ViSNet 源码（`src/model/ViSNet-main/`），不再依赖 PyG 内置实现，具体变更：
+
+| 组件 | 旧版（PyG）| 新版（本地源码）|
+|------|-----------|----------------|
+| 表征模型 | `torch_geometric.nn.models.ViSNet` | 本地 `ViSNetBlock`（lmax=2, vertex_type=Edge）|
+| 输出头 | `Scalar`（仅标量特征）| `EquivariantScalar`（标量 + 等变向量特征）|
+| 先验模型 | 无 | **Atomref**（最小二乘法拟合的逐元素参考能量）|
+| `hidden_channels` | 256 | **512**（与论文一致）|
+| `num_layers` | 6 | **9**（与论文一致）|
+| `num_rbf` | 32 | **64**（与论文一致）|
+| vec 特征形状 | `(N, 3, C)` | `(N, 8, C)`（lmax=2，8 个球谐分量）|
+
+> **注意**：vec 形状变化对 Stage 1/2 训练无影响，因为两者均忽略 vec（`_`）。
+> 使用预训练权重时必须指定 `--hidden_channels 512`。
+
 **冒烟测试（验证环境，~2 分钟）**
 
 ```bash
 python pretrain_visnet.py \
     --data_root data/qm9 \
     --max_samples 1000 \
+    --hidden_channels 64 \
+    --num_layers 2 \
     --epochs 2
 ```
 
@@ -118,15 +201,15 @@ python pretrain_visnet.py \
 > python pretrain_visnet.py --data_root data/qm9 --qm9_url <your-mirror-url> ...
 > ```
 
-**完整预训练**
+**完整预训练（4090 GPU，论文配置）**
 
 ```bash
 python pretrain_visnet.py \
     --data_root data/qm9 \
     --output_dir checkpoints/visnet_pretrained \
-    --hidden_channels 256 \
-    --num_layers 6 \
-    --num_rbf 32 \
+    --hidden_channels 512 \
+    --num_layers 9 \
+    --num_rbf 64 \
     --cutoff 5.0 \
     --num_heads 8 \
     --train_size 110000 \
@@ -146,6 +229,7 @@ python pretrain_visnet.py \
 python pretrain_visnet.py \
     --data_root data/qm9 \
     --output_dir checkpoints/visnet_pretrained \
+    --hidden_channels 512 \
     --epochs 300 \
     --device cuda \
     --wandb \
@@ -158,15 +242,20 @@ python pretrain_visnet.py \
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
 | `--data_root` | `data/qm9` | QM9 下载/缓存目录（首次运行自动下载） |
-| `--hidden_channels` | 256 | 特征维度，须与 Stage 1/2 保持一致 |
-| `--train_size` | 110000 | 训练集大小（QM9 共 ~13 万分子） |
-| `--epochs` | 300 | 训练轮数；val MAE ~0.06 eV 为较好结果 |
+| `--hidden_channels` | **512** | 特征维度，**须与 Stage 1/2 `--hidden_channels` 保持一致** |
+| `--num_layers` | **9** | 消息传递层数（论文配置）|
+| `--num_rbf` | **64** | 径向基函数数量（论文配置）|
+| `--train_size` | 110000 | 训练集大小（QM9 共 ~13 万分子）|
+| `--epochs` | 300 | 训练轮数；val MAE ≤ 0.05 eV 为较好结果 |
 | `--lr_patience` | 15 | 验证 MAE 不下降多少 epoch 后降低学习率 |
-| `--wandb` | False | 开启 W&B 日志（需安装 wandb） |
+| `--wandb` | False | 开启 W&B 日志（需安装 wandb）|
 | `--wandb_project` | `ed-pretrain-visnet` | W&B 项目名 |
-| `--run_name` | None | W&B run 名称（留空则自动生成） |
+| `--run_name` | None | W&B run 名称（留空则自动生成）|
 
 输出：`checkpoints/visnet_pretrained/best.pt`（最佳验证 MAE 时保存）
+
+> 检查点新增 `atomref` 字段（拟合的逐元素参考能量），`representation_model` 键格式不变，
+> 与 Stage 1/2 的加载方式完全兼容。
 
 ---
 
@@ -198,7 +287,7 @@ python train_stage1.py \
     --batch_size 16 \
     --lr 1e-4 \
     --epochs 100 \
-    --hidden_channels 256 \
+    --hidden_channels 512 \
     --num_layers 4 \
     --cutoff 8.0 \
     --cfg_drop_prob 0.15 \
@@ -266,7 +355,7 @@ python train_stage2.py \
     --batch_size 16 \
     --lr 1e-4 \
     --epochs 100 \
-    --hidden_channels 256 \
+    --hidden_channels 512 \
     --num_layers 4 \
     --num_heads 8 \
     --cutoff 8.0 \

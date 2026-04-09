@@ -201,10 +201,12 @@ bench_mark/
 └── train_energy.py             # 训练入口
 ```
 
-### 冒烟测试（~2 分钟，CPU）
+### 冒烟测试（已验证，CPU，~35 分钟）
+
+使用 `-m` 方式从项目根目录运行（确保 `bench_mark` 包可被正确导入）：
 
 ```bash
-python bench_mark/train_energy.py \
+python -m bench_mark.train_energy \
     --pkl_path src/data/ed_energy_5w/processed/mol_EDthresh0.05_data.pkl \
     --csv_path src/data/ed_energy_5w/raw/ed_energy_5w.csv \
     --cache_dir src/data/ed_energy_5w/cache_fps \
@@ -214,10 +216,31 @@ python bench_mark/train_energy.py \
     --device cpu
 ```
 
-### 完整训练（GPU，~几小时）
+**实际运行输出**（2 epoch，128 样本，npoint=512，CPU）：
+
+```
+PointMetaBase-S-X3D  params: 2,478,476
+Epoch    1/2  train_loss=2455288.69  val_mean_MAE=1186.46  lr=5.00e-04
+  E1_Final              MAE=807.3890  RMSE=832.3622  r=0.0914
+  E2_NucRepul           MAE=994.7121  RMSE=1029.5221  r=0.2225
+  E3_OneElec            MAE=3074.6003  RMSE=3147.9084  r=0.1656
+  E4_TwoElec            MAE=1353.5226  RMSE=1388.3496  r=0.2199
+  E5_XC                 MAE=81.1312   RMSE=82.3123    r=0.1213
+  E6_Total              MAE=807.4011  RMSE=832.3754   r=0.0281
+Epoch    2/2  train_loss=2454587.00  val_mean_MAE=1186.39  lr=0.00e+00
+  E1_Final              MAE=807.2891  RMSE=832.2639  r=0.1068
+  ...
+=== Test Set Evaluation ===
+  Mean MAE: 1220.2147
+Done. Best val mean MAE: 1186.3851
+```
+
+> **说明**：仅 2 epoch + 128 样本未收敛，MAE 偏高符合预期。相对顺序正确（E5 MAE 最小，E3 最大），管道端到端验证通过。
+
+### 完整训练（GPU，推荐）
 
 ```bash
-python bench_mark/train_energy.py \
+python -m bench_mark.train_energy \
     --pkl_path src/data/ed_energy_5w/processed/mol_EDthresh0.05_data.pkl \
     --csv_path src/data/ed_energy_5w/raw/ed_energy_5w.csv \
     --cache_dir src/data/ed_energy_5w/cache_fps \
@@ -231,6 +254,8 @@ python bench_mark/train_energy.py \
     --wandb_project ed-energy \
     --run_name repro-x3d-v1
 ```
+
+> **注意**：请从项目根目录（`ED/`）以 `-m` 方式运行，而非直接 `python bench_mark/train_energy.py`，以避免相对包导入错误。
 
 ---
 
